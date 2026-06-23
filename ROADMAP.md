@@ -21,6 +21,7 @@ This roadmap outlines the planned development phases for the ServCache distribut
 - [x] **Redis Engine**: Pluggable Redis/Valkey connector to leverage remote clusters.
 - [x] **Dynamic Routing**: Automatic selection of in-memory or Redis backend depending on target URL schemes.
 - [x] **OTel context propagation**: Span tracing context forwarding.
+- [x] **GitHub Actions CI Pipeline**: Automated build and test pipeline configuration.
 
 ## Phase 3: Cluster Replications & Cache Patterns (Planned)
 - [ ] **Multi-Region Replication**: Cache replication across geo-distributed nodes.
