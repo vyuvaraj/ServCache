@@ -39,7 +39,7 @@ This roadmap outlines the planned development phases for the ServCache distribut
 - [ ] **Tiered Storage**: Hot keys in memory → warm keys in Redis → cold keys in ServStore. Automatic promotion/demotion.
 
 ## Phase 5: Architectural Depth & Developer Experience (Pending)
-- [ ] **Adaptive Pool Invalidation** — Automatically invalidate cache entries tied to ServDB writes using a change-data-capture hook (PS.1)
+- [x] **Adaptive Pool Invalidation** — Automatically invalidate cache entries tied to ServDB writes using a change-data-capture hook (PS.1)
 - [ ] **`serv cache inspect` CLI** — CLI command to display per-namespace key counts, memory usage, hit/miss ratios, and top hot keys for developer debugging (DevOps)
 - [ ] **Cache Warming Fixtures** — Load a named fixtures file (`serv cache warm --fixture dev.yaml`) on service start for reproducible local development environments (DX)
 
