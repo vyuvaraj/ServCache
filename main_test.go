@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -264,5 +265,26 @@ func TestMultiRegionReplication(t *testing.T) {
 	if !replicatedDelete {
 		t.Error("expected delete to be replicated to peer")
 	}
+}
+
+func BenchmarkInMemoryCacheGetSet(b *testing.B) {
+	c := cache.NewInMemoryCache(30 * time.Minute)
+	for i := 0; i < 100; i++ {
+		_ = c.Set(fmt.Sprintf("key-%d", i), "value", 0)
+	}
+
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			key := fmt.Sprintf("key-%d", i%100)
+			if i%2 == 0 {
+				_, _, _ = c.Get(key)
+			} else {
+				_ = c.Set(key, "new-value", 0)
+			}
+			i++
+		}
+	})
 }
 
