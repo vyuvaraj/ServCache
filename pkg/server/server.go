@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"math/rand"
 	"os"
 	"strings"
 	"sync"
@@ -58,6 +59,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
+	})
+
+	mux.HandleFunc("/api/cache/gossip-invalidate", func(w http.ResponseWriter, req *http.Request) {
+		if req.Method == http.MethodPost {
+			s.handleGossipInvalidate(w, req)
+		} else {
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		}
 	})
 
 	mux.HandleFunc("/api/cache", func(w http.ResponseWriter, req *http.Request) {
@@ -187,6 +196,7 @@ func (s *Server) handleSet(w http.ResponseWriter, req *http.Request) {
 
 	if req.URL.Query().Get("replicated") != "true" && len(s.peers) > 0 {
 		s.replicate(http.MethodPost, "/api/cache", bodyBytes)
+		s.gossipInvalidate(body.Key, "")
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -214,6 +224,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, req *http.Request, key stri
 
 	if req.URL.Query().Get("replicated") != "true" && len(s.peers) > 0 {
 		s.replicate(http.MethodDelete, fmt.Sprintf("/api/cache/%s", key), nil)
+		s.gossipInvalidate(key, "")
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -353,4 +364,85 @@ func (s *Server) handleInspect(w http.ResponseWriter, _ *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handleGossipInvalidate(w http.ResponseWriter, req *http.Request) {
+	key := req.URL.Query().Get("key")
+	if key == "" {
+		http.Error(w, "Key required", http.StatusBadRequest)
+		return
+	}
+
+	// Invalidate locally
+	_ = s.cache.Delete(key)
+
+	pathHeader := req.Header.Get("X-Gossip-Path")
+	visited := make(map[string]bool)
+	if pathHeader != "" {
+		for _, v := range strings.Split(pathHeader, ",") {
+			visited[v] = true
+		}
+	}
+
+	s.gossipInvalidate(key, pathHeader)
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status":"invalidated"}`))
+}
+
+func (s *Server) gossipInvalidate(key string, path string) {
+	selfAddr := os.Getenv("SERV_CACHE_ADDR")
+	if selfAddr == "" {
+		selfAddr = "localhost:8083"
+	}
+
+	newPath := selfAddr
+	if path != "" {
+		newPath = path + "," + selfAddr
+	}
+
+	visited := make(map[string]bool)
+	for _, p := range strings.Split(newPath, ",") {
+		visited[p] = true
+	}
+
+	var candidates []string
+	for _, p := range s.peers {
+		if !visited[p] && p != selfAddr {
+			candidates = append(candidates, p)
+		}
+	}
+
+	if len(candidates) == 0 {
+		return
+	}
+
+	fanout := 2
+	if len(candidates) < fanout {
+		fanout = len(candidates)
+	}
+
+	// Shuffle candidates to pick random peers
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	r.Shuffle(len(candidates), func(i, j int) {
+		candidates[i], candidates[j] = candidates[j], candidates[i]
+	})
+
+	for i := 0; i < fanout; i++ {
+		peer := candidates[i]
+		go func(p string) {
+			url := fmt.Sprintf("%s/api/cache/gossip-invalidate?key=%s&replicated=true", strings.TrimSuffix(p, "/"), key)
+			req, err := http.NewRequest("POST", url, nil)
+			if err != nil {
+				return
+			}
+			req.Header.Set("X-Gossip-Path", newPath)
+
+			client := &http.Client{Timeout: 2 * time.Second}
+			resp, err := client.Do(req)
+			if err == nil {
+				resp.Body.Close()
+			}
+		}(peer)
+	}
 }

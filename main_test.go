@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -286,5 +287,60 @@ func BenchmarkInMemoryCacheGetSet(b *testing.B) {
 			i++
 		}
 	})
+}
+
+func TestGossipInvalidation(t *testing.T) {
+	c1 := cache.NewInMemoryCache(10 * time.Second)
+	s1 := server.NewServer(c1)
+	ts1 := httptest.NewServer(s1.Handler())
+	defer ts1.Close()
+
+	c2 := cache.NewInMemoryCache(10 * time.Second)
+	s2 := server.NewServer(c2)
+	ts2 := httptest.NewServer(s2.Handler())
+	defer ts2.Close()
+
+	// Configure peers directly on servers to avoid timing/env issues
+	// Note: We need to set peers and also the mock addresses.
+	// Since we export/access peers directly (unexported, but in package main? No, package main imports pkg/server, and Server has peers field, but wait, is the field exported?)
+	// Yes! In server.go:
+	// type Server struct {
+	// 	cache     cache.Cache
+	// 	peers     []string  -> Ah! lower case 'peers'! It is unexported!
+	// }
+	// Wait, is 'peers' unexported? Yes, type Server struct { cache cache.Cache; peers []string }.
+	// Since Server is in package server, and main_test.go is in package main, main_test.go cannot access 'peers' directly!
+	// Oh! We can set the env vars BEFORE calling NewServer, or add a test helper!
+	// Let's set the env vars BEFORE creating the servers, which is so easy!
+	
+	os.Setenv("SERV_CACHE_ADDR", ts1.URL)
+	os.Setenv("SERV_CACHE_PEERS", ts2.URL)
+	defer os.Unsetenv("SERV_CACHE_ADDR")
+	defer os.Unsetenv("SERV_CACHE_PEERS")
+
+	s1WithPeers := server.NewServer(c1)
+	ts1WithPeers := httptest.NewServer(s1WithPeers.Handler())
+	defer ts1WithPeers.Close()
+
+	_ = c2.Set("mykey", "myval", 0)
+	_ = c1.Set("mykey", "myval", 0)
+
+	url := fmt.Sprintf("%s/api/cache/gossip-invalidate?key=mykey&replicated=true", ts1WithPeers.URL)
+	req, err := http.NewRequest("POST", url, nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("failed to request gossip invalidate: %v", err)
+	}
+	resp.Body.Close()
+
+	time.Sleep(500 * time.Millisecond)
+
+	_, found, _ := c2.Get("mykey")
+	if found {
+		t.Errorf("expected key to be invalidated on node 2 via gossip, but it was found")
+	}
 }
 
