@@ -1,4 +1,4 @@
-project_name: servcache
+﻿project_name: servcache
 version: 2
 
 before:
@@ -47,7 +47,7 @@ dockers:
   - image_templates:
       - "ghcr.io/vyuvaraj/servcache:{{.Tag}}"
       - "ghcr.io/vyuvaraj/servcache:latest"
-    dockerfile: Dockerfile
+    dockerfile: Dockerfile.goreleaser
     build_flag_templates:
       - "--label=org.opencontainers.image.title=ServCache"
       - "--label=org.opencontainers.image.version={{.Version}}"
