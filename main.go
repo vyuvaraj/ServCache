@@ -18,6 +18,11 @@ import (
 
 const version = "0.1.0"
 
+// Enterprise hooks (overridden in EE build)
+var (
+	EnterpriseListenAndServeTLS = func(srv *http.Server, certFile, keyFile string) error { return nil }
+)
+
 func main() {
 	port := flag.Int("port", 8086, "ServCache listen port")
 	backend := flag.String("backend", "memory", "Cache backend: memory or redis")
@@ -58,9 +63,18 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("ServCache listening on http://localhost:%d", *port)
-		if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server listen failed: %v", err)
+		certFile := os.Getenv("SERV_CACHE_TLS_CERT")
+		keyFile := os.Getenv("SERV_CACHE_TLS_KEY")
+		if certFile != "" && keyFile != "" {
+			log.Printf("ServCache listening with TLS on port %d", *port)
+			if err := EnterpriseListenAndServeTLS(httpSrv, certFile, keyFile); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Server TLS listen failed: %v", err)
+			}
+		} else {
+			log.Printf("ServCache listening on http://localhost:%d", *port)
+			if err := httpSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Server listen failed: %v", err)
+			}
 		}
 	}()
 
