@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"math/rand"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -59,6 +59,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, req *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("OK"))
+	})
+
+	mux.HandleFunc("/metrics", func(w http.ResponseWriter, req *http.Request) {
+		s.handlePrometheusMetrics(w, req)
 	})
 
 	mux.HandleFunc("/api/cache/gossip-invalidate", func(w http.ResponseWriter, req *http.Request) {
@@ -364,6 +368,40 @@ func (s *Server) handleInspect(w http.ResponseWriter, _ *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) handlePrometheusMetrics(w http.ResponseWriter, _ *http.Request) {
+	h := atomic.LoadUint64(&s.hits)
+	m := atomic.LoadUint64(&s.misses)
+	ratio := 0.0
+	if h+m > 0 {
+		ratio = float64(h) / float64(h+m)
+	}
+
+	var totalKeys int
+	type keysLister interface {
+		Keys() []string
+	}
+	if lister, ok := s.cache.(keysLister); ok {
+		totalKeys = len(lister.Keys())
+	}
+
+	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+	fmt.Fprintf(w, "# HELP servcache_hits_total Total number of cache hits.\n")
+	fmt.Fprintf(w, "# TYPE servcache_hits_total counter\n")
+	fmt.Fprintf(w, "servcache_hits_total %d\n\n", h)
+
+	fmt.Fprintf(w, "# HELP servcache_misses_total Total number of cache misses.\n")
+	fmt.Fprintf(w, "# TYPE servcache_misses_total counter\n")
+	fmt.Fprintf(w, "servcache_misses_total %d\n\n", m)
+
+	fmt.Fprintf(w, "# HELP servcache_hit_ratio Current cache hit ratio (0.0 to 1.0).\n")
+	fmt.Fprintf(w, "# TYPE servcache_hit_ratio gauge\n")
+	fmt.Fprintf(w, "servcache_hit_ratio %f\n\n", ratio)
+
+	fmt.Fprintf(w, "# HELP servcache_total_keys Current number of keys stored in cache.\n")
+	fmt.Fprintf(w, "# TYPE servcache_total_keys gauge\n")
+	fmt.Fprintf(w, "servcache_total_keys %d\n", totalKeys)
 }
 
 func (s *Server) handleGossipInvalidate(w http.ResponseWriter, req *http.Request) {
