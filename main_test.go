@@ -344,3 +344,36 @@ func TestGossipInvalidation(t *testing.T) {
 	}
 }
 
+func TestCacheLRUEviction(t *testing.T) {
+	os.Setenv("SERV_CACHE_MAX_KEYS", "3")
+	defer os.Unsetenv("SERV_CACHE_MAX_KEYS")
+
+	c := cache.NewInMemoryCache(10 * time.Second)
+
+	_ = c.Set("k1", "v1", 0)
+	_ = c.Set("k2", "v2", 0)
+	_ = c.Set("k3", "v3", 0)
+
+	// Access k1, making it most recently used, k2 remains oldest (least recently used)
+	_, _, _ = c.Get("k1")
+
+	// Set k4, which should trigger eviction of k2
+	_ = c.Set("k4", "v4", 0)
+
+	// Verify k2 is evicted
+	_, found2, _ := c.Get("k2")
+	if found2 {
+		t.Error("expected k2 to be evicted via LRU eviction policy")
+	}
+
+	// Verify k1 and k4 are still present
+	_, found1, _ := c.Get("k1")
+	if !found1 {
+		t.Error("expected k1 to be retained")
+	}
+	_, found4, _ := c.Get("k4")
+	if !found4 {
+		t.Error("expected k4 to be retained")
+	}
+}
+

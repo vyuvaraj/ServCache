@@ -2,11 +2,13 @@ package cache
 
 import (
 	"bytes"
+	"container/list"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,74 +23,117 @@ type Cache interface {
 }
 
 type cacheEntry struct {
+	key        string
 	value      interface{}
 	expiration time.Time
 }
 
 type InMemoryCache struct {
-	mu      sync.RWMutex
-	items   map[string]cacheEntry
-	cleanup time.Duration
+	mu        sync.RWMutex
+	items     map[string]*list.Element
+	evictList *list.List
+	maxKeys   int
+	cleanup   time.Duration
 }
 
 func NewInMemoryCache(cleanupInterval time.Duration) *InMemoryCache {
+	maxKeys := 10000
+	if envMax := os.Getenv("SERV_CACHE_MAX_KEYS"); envMax != "" {
+		if val, err := strconv.Atoi(envMax); err == nil && val > 0 {
+			maxKeys = val
+		}
+	}
+
 	c := &InMemoryCache{
-		items:   make(map[string]cacheEntry),
-		cleanup: cleanupInterval,
+		items:     make(map[string]*list.Element),
+		evictList: list.New(),
+		maxKeys:   maxKeys,
+		cleanup:   cleanupInterval,
 	}
 	go c.startEvictionLoop()
 	return c
 }
 
 func (c *InMemoryCache) Get(key string) (interface{}, bool, error) {
-	c.mu.RLock()
-	entry, exists := c.items[key]
-	c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
+	elem, exists := c.items[key]
 	if !exists {
 		if backend := os.Getenv("SERV_CACHE_BACKEND_DB"); backend != "" {
+			// Release lock temporarily for HTTP request
+			c.mu.Unlock()
 			val, err := c.fetchFromBackend(key)
+			c.mu.Lock()
 			if err == nil && val != nil {
-				c.setLocal(key, val, 1*time.Minute)
+				c.setLocalNoLock(key, val, 1*time.Minute)
 				return val, true, nil
 			}
 		}
 		return nil, false, nil
 	}
 
+	entry := elem.Value.(*cacheEntry)
 	if !entry.expiration.IsZero() && time.Now().After(entry.expiration) {
-		c.mu.Lock()
+		c.evictList.Remove(elem)
 		delete(c.items, key)
-		c.mu.Unlock()
-		
+
 		if backend := os.Getenv("SERV_CACHE_BACKEND_DB"); backend != "" {
+			c.mu.Unlock()
 			val, err := c.fetchFromBackend(key)
+			c.mu.Lock()
 			if err == nil && val != nil {
-				c.setLocal(key, val, 1*time.Minute)
+				c.setLocalNoLock(key, val, 1*time.Minute)
 				return val, true, nil
 			}
 		}
 		return nil, false, nil
 	}
 
+	c.evictList.MoveToFront(elem)
 	return entry.value, true, nil
 }
 
-func (c *InMemoryCache) setLocal(key string, value interface{}, ttl time.Duration) {
+func (c *InMemoryCache) setLocalNoLock(key string, value interface{}, ttl time.Duration) {
 	var expiration time.Time
 	if ttl > 0 {
 		expiration = time.Now().Add(ttl)
 	}
-	c.mu.Lock()
-	c.items[key] = cacheEntry{
+
+	if elem, exists := c.items[key]; exists {
+		c.evictList.MoveToFront(elem)
+		entry := elem.Value.(*cacheEntry)
+		entry.value = value
+		entry.expiration = expiration
+		return
+	}
+
+	entry := &cacheEntry{
+		key:        key,
 		value:      value,
 		expiration: expiration,
 	}
-	c.mu.Unlock()
+	elem := c.evictList.PushFront(entry)
+	c.items[key] = elem
+
+	if c.maxKeys > 0 && c.evictList.Len() > c.maxKeys {
+		c.evictOldestNoLock()
+	}
+}
+
+func (c *InMemoryCache) evictOldestNoLock() {
+	elem := c.evictList.Back()
+	if elem != nil {
+		c.evictList.Remove(elem)
+		entry := elem.Value.(*cacheEntry)
+		delete(c.items, entry.key)
+	}
 }
 
 func (c *InMemoryCache) Set(key string, value interface{}, ttl time.Duration) error {
-	c.setLocal(key, value, ttl)
+	c.mu.Lock()
+	c.setLocalNoLock(key, value, ttl)
+	c.mu.Unlock()
 
 	if backend := os.Getenv("SERV_CACHE_BACKEND_DB"); backend != "" {
 		go c.writeToBackend(key, value)
@@ -98,15 +143,19 @@ func (c *InMemoryCache) Set(key string, value interface{}, ttl time.Duration) er
 
 func (c *InMemoryCache) Delete(key string) error {
 	c.mu.Lock()
-	delete(c.items, key)
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	if elem, exists := c.items[key]; exists {
+		c.evictList.Remove(elem)
+		delete(c.items, key)
+	}
 	return nil
 }
 
 func (c *InMemoryCache) Clear() error {
 	c.mu.Lock()
-	c.items = make(map[string]cacheEntry)
-	c.mu.Unlock()
+	defer c.mu.Unlock()
+	c.items = make(map[string]*list.Element)
+	c.evictList.Init()
 	return nil
 }
 
@@ -114,16 +163,19 @@ func (c *InMemoryCache) DeletePattern(pattern string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	for k := range c.items {
+	for k, elem := range c.items {
 		matched, err := path.Match(pattern, k)
 		if err == nil && matched {
+			c.evictList.Remove(elem)
 			delete(c.items, k)
 		} else if strings.HasSuffix(pattern, "*") {
 			prefix := strings.TrimSuffix(pattern, "*")
 			if strings.HasPrefix(k, prefix) {
+				c.evictList.Remove(elem)
 				delete(c.items, k)
 			}
 		} else if k == pattern {
+			c.evictList.Remove(elem)
 			delete(c.items, k)
 		}
 	}
@@ -172,8 +224,10 @@ func (c *InMemoryCache) EvictExpired() {
 	defer c.mu.Unlock()
 
 	now := time.Now()
-	for k, v := range c.items {
-		if !v.expiration.IsZero() && now.After(v.expiration) {
+	for k, elem := range c.items {
+		entry := elem.Value.(*cacheEntry)
+		if !entry.expiration.IsZero() && now.After(entry.expiration) {
+			c.evictList.Remove(elem)
 			delete(c.items, k)
 		}
 	}
@@ -195,3 +249,4 @@ func (c *InMemoryCache) Keys() []string {
 	}
 	return keys
 }
+
