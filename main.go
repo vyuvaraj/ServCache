@@ -20,6 +20,9 @@ import (
 
 const version = "0.1.0"
 
+// Enterprise hooks (overridden/initialized in ssl_offload files)
+var EnterpriseListenAndServeTLS func(srv *http.Server, certFile, keyFile string) error
+
 func main() {
 	port := flag.Int("port", 8086, "ServCache listen port")
 	backend := flag.String("backend", "memory", "Cache backend: memory or redis")
