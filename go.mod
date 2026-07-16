@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	github.com/redis/go-redis/v9 v9.5.1
-	github.com/vyuvaraj/ServShared v1.0.2-0.20260714131806-8f86487bce70
+	github.com/vyuvaraj/ServShared v1.0.2-0.20260716090546-226c70693c88
 )
 
 require (
