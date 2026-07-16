@@ -75,5 +75,25 @@ scoops:
     description: "Distributed caching service from the ServVerse platform"
     license: "Apache-2.0"
 
+
+nfpms:
+  - id: servcache-pkg
+    package_name: servcache
+    builds: [servcache]
+    vendor: Yuvaraj
+    homepage: https://github.com/vyuvaraj/ServCache
+    maintainer: Yuvaraj <vyuvaraj@github.com>
+    description: High-performance distributed caching layer from the ServVerse platform
+    license: Apache-2.0
+    formats:
+      - deb
+      - rpm
+    bindir: /usr/local/bin
+    contents:
+      - src: README.md
+        dst: /usr/share/doc/servcache/README.md
+    scripts:
+      postinstall: scripts/postinstall.sh
+      preremove: scripts/preremove.sh
 release:
   mode: replace
